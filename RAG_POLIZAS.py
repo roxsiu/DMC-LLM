@@ -1,0 +1,84 @@
+# App RAG para pólizas 
+# ---------------------------------------------------------------
+# Cambios mínimos:
+# - Acepta .txt
+# - Usa CharacterTextSplitter + SentenceTransformerEmbeddings + FAISS
+# - Usa RetrievalQA (patrón clásico) con ChatOpenAI si hay API key
+
+
+import os
+import streamlit as st
+
+from langchain_text_splitters import CharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import SentenceTransformerEmbeddings
+from langchain.schema import Document
+from langchain.chains import RetrievalQA
+
+try:
+    from langchain_openai import ChatOpenAI
+    HAS_OPENAI = True
+except Exception:
+    HAS_OPENAI = False
+
+st.set_page_config(page_title="Poliza RAG", page_icon=None)
+st.title("Poliza RAG (.txt)")
+
+# ---------- Entrada ----------
+file = st.file_uploader("Sube la poliza (.txt)", type=["txt"])
+
+# Parámetros simples (constantes)
+chunk_size = 900
+chunk_overlap = 150
+k = 4
+
+# ---------- Construcción de índice ----------
+if st.button("Construir índice") and file:
+    raw = file.read()
+    text = raw.decode("utf-8", errors="ignore")
+    if not text.strip():
+        text = raw.decode("latin-1", errors="ignore")
+
+    splitter = CharacterTextSplitter.from_tiktoken_encoder(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+    docs = [Document(page_content=c, metadata={"source": file.name}) for c in splitter.split_text(text)]
+
+    embeddings = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+    vs = FAISS.from_documents(docs, embeddings)
+    st.session_state.vs = vs
+    st.success(f"Índice creado: {len(docs)} fragmentos")
+
+# ---------- Chat ----------
+question = st.text_input("Pregunta (coberturas, exclusiones, deducible, vigencia, etc.)")
+
+if st.button("Responder"):
+    if "vs" not in st.session_state:
+        st.warning("Primero construye el índice")
+    else:
+        if HAS_OPENAI and os.getenv("OPENAI_API_KEY"):
+            retriever = st.session_state.vs.as_retriever(search_kwargs={"k": k})
+            llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0.0)
+            qa = RetrievalQA.from_chain_type(
+                llm=llm,
+                chain_type="stuff",
+                retriever=retriever,
+                return_source_documents=True,
+            )
+            result = qa({"query": question})
+            out = result["result"]
+            sources = result.get("source_documents", [])
+            st.write(out)
+            with st.expander("Fragmentos usados"):
+                for d in sources:
+                    st.caption(d.metadata.get("source", ""))
+                    st.code(d.page_content[:250] + ("…" if len(d.page_content) > 250 else ""))
+        else:
+            retrieved = st.session_state.vs.similarity_search(question, k=k)
+            out = "\n\n".join(d.page_content for d in retrieved)
+            st.write(out[:900] + ("…" if len(out) > 900 else ""))
+            with st.expander("Fragmentos usados"):
+                for d in retrieved:
+                    st.caption(d.metadata.get("source", ""))
+                    st.code(d.page_content[:250] + ("…" if len(d.page_content) > 250 else ""))
