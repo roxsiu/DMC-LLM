@@ -7,78 +7,115 @@
 
 
 import os
+import re
 import streamlit as st
-
-from langchain_text_splitters import CharacterTextSplitter
+from dotenv import load_dotenv
+from langchain_community.document_loaders import TextLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import SentenceTransformerEmbeddings
-from langchain.schema import Document
+from langchain_community.chat_models import ChatOpenAI
 from langchain.chains import RetrievalQA
 
-try:
-    from langchain_openai import ChatOpenAI
-    HAS_OPENAI = True
-except Exception:
-    HAS_OPENAI = False
+# -------------------------------------------------------------
+# CARGA DE VARIABLES Y CONFIGURACIÓN
+# -------------------------------------------------------------
+load_dotenv()
+api_key = os.getenv("OPENAI_API_KEY")
 
-st.set_page_config(page_title="Poliza RAG", page_icon=None)
-st.title("Poliza RAG (.txt)")
+st.set_page_config(page_title="RAG Pólizas", layout="wide")
+st.title("RAG PÓLIZAS (.txt)")
+st.write("Asistente para consultar pólizas de seguro en formato texto plano.")
 
-# ---------- Entrada ----------
-file = st.file_uploader("Sube la poliza (.txt)", type=["txt"])
+# -------------------------------------------------------------
+# SIDEBAR – PREGUNTAS SUGERIDAS
+# -------------------------------------------------------------
+st.sidebar.header("Preguntas sugeridas")
 
-# Parámetros simples (constantes)
-chunk_size = 900
-chunk_overlap = 150
-k = 4
+suggested_questions = [
+    "¿Qué cubre esta póliza?",
+    "¿Qué exclusiones menciona el documento?",
+    "¿Cuál es el deducible aplicable?"
+]
 
-# ---------- Construcción de índice ----------
-if st.button("Construir índice") and file:
-    raw = file.read()
-    text = raw.decode("utf-8", errors="ignore")
-    if not text.strip():
-        text = raw.decode("latin-1", errors="ignore")
+selected_question = st.sidebar.radio(
+    "Selecciona una pregunta o escribe la tuya:",
+    suggested_questions
+)
 
-    splitter = CharacterTextSplitter.from_tiktoken_encoder(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-    )
-    docs = [Document(page_content=c, metadata={"source": file.name}) for c in splitter.split_text(text)]
+# -------------------------------------------------------------
+# FUNCIONES AUXILIARES
+# -------------------------------------------------------------
+def split_by_titles(text):
+    """Divide el texto por títulos en mayúsculas."""
+    sections = re.split(r"\n(?=[A-ZÁÉÍÓÚÑ¿]{3,}.*\n)", text)
+    cleaned_sections = [s.strip() for s in sections if len(s.strip()) > 0]
+    return cleaned_sections
 
-    embeddings = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
-    vs = FAISS.from_documents(docs, embeddings)
-    st.session_state.vs = vs
-    st.success(f"Índice creado: {len(docs)} fragmentos")
+def chunk_text(text):
+    """Combina secciones en mayúsculas y división por tamaño."""
+    sections = split_by_titles(text)
+    chunks = []
+    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
+    for sec in sections:
+        chunks.extend(splitter.split_text(sec))
+    return chunks
 
-# ---------- Chat ----------
-question = st.text_input("Pregunta (coberturas, exclusiones, deducible, vigencia, etc.)")
+def build_vectorstore(file_path):
+    """Crea el índice vectorial FAISS a partir del texto."""
+    loader = TextLoader(file_path, encoding="utf-8")
+    documents = loader.load()
+    text = "\n".join([d.page_content for d in documents])
+    chunks = chunk_text(text)
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    db = FAISS.from_texts(chunks, embeddings)
+    return db
 
-if st.button("Responder"):
-    if "vs" not in st.session_state:
-        st.warning("Primero construye el índice")
+def get_llm():
+    """Carga el modelo LLM de OpenAI si hay API key."""
+    if api_key:
+        return ChatOpenAI(temperature=0.2, model="gpt-4o-mini", openai_api_key=api_key)
     else:
-        if HAS_OPENAI and os.getenv("OPENAI_API_KEY"):
-            retriever = st.session_state.vs.as_retriever(search_kwargs={"k": k})
-            llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0.0)
-            qa = RetrievalQA.from_chain_type(
-                llm=llm,
-                chain_type="stuff",
-                retriever=retriever,
-                return_source_documents=True,
-            )
-            result = qa({"query": question})
-            out = result["result"]
-            sources = result.get("source_documents", [])
-            st.write(out)
-            with st.expander("Fragmentos usados"):
-                for d in sources:
-                    st.caption(d.metadata.get("source", ""))
-                    st.code(d.page_content[:250] + ("…" if len(d.page_content) > 250 else ""))
+        st.warning("No se detectó OPENAI_API_KEY. Se usará solo búsqueda semántica.")
+        return None
+
+def create_qa_chain(vectorstore, llm):
+    """Crea la cadena RAG (Retriever + Modelo)."""
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+    if llm:
+        chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever, chain_type="stuff")
+    else:
+        chain = retriever
+    return chain
+
+# -------------------------------------------------------------
+# INTERFAZ STREAMLIT
+# -------------------------------------------------------------
+uploaded_file = st.file_uploader("Sube el archivo de póliza (.txt)", type=["txt"])
+
+if uploaded_file is not None:
+    temp_path = "temp_policy.txt"
+    with open(temp_path, "wb") as f:
+        f.write(uploaded_file.read())
+
+    st.info("Construyendo el índice vectorial... Esto puede tardar unos segundos.")
+    db = build_vectorstore(temp_path)
+    llm = get_llm()
+    qa_chain = create_qa_chain(db, llm)
+
+    st.success("Índice creado correctamente. Ya puedes hacer preguntas sobre la póliza.")
+
+    # Entrada de texto principal
+    query = st.text_input("Escribe tu pregunta:", value=selected_question)
+
+    if query:
+        if llm:
+            response = qa_chain.run(query)
+            st.write("**Respuesta:**", response)
         else:
-            retrieved = st.session_state.vs.similarity_search(question, k=k)
-            out = "\n\n".join(d.page_content for d in retrieved)
-            st.write(out[:900] + ("…" if len(out) > 900 else ""))
-            with st.expander("Fragmentos usados"):
-                for d in retrieved:
-                    st.caption(d.metadata.get("source", ""))
-                    st.code(d.page_content[:250] + ("…" if len(d.page_content) > 250 else ""))
+            docs = db.similarity_search(query, k=3)
+            st.write("**Textos más relevantes:**")
+            for i, doc in enumerate(docs, 1):
+                st.write(f"**{i}.** {doc.page_content[:400]}...")
+else:
+    st.info("Sube un archivo .txt de una póliza para comenzar.")
