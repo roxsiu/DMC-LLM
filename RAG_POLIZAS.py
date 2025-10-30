@@ -1,94 +1,123 @@
-# ---------------------------------------------------------------------
-# 🔹 IMPORTS
-# ---------------------------------------------------------------------
 import os
 import streamlit as st
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import Chroma
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.chains import RetrievalQA
 from langchain.chat_models import ChatOpenAI
+from langchain.prompts import PromptTemplate
+from langchain.chains import RetrievalQA
+from langchain.vectorstores import Chroma
+from langchain.embeddings.openai import OpenAIEmbeddings
 
-# ---------------------------------------------------------------------
-# 🔹 Cargar la API Key desde el archivo .env
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------
+# CONFIGURACIÓN INICIAL
+# ------------------------------------------------------------
+
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 
 if not api_key:
-    st.error("⚠️ No se encontró la variable OPENAI_API_KEY. Usa 'echo \"OPENAI_API_KEY=tu_api_key\" >> .env'")
-else:
-    os.environ["OPENAI_API_KEY"] = api_key
+    st.error("No se encontró la variable OPENAI_API_KEY. Agrega tu clave al archivo .env.")
+    st.stop()
 
-# ---------------------------------------------------------------------
-# 🔹 Configuración de la app Streamlit
-# ---------------------------------------------------------------------
-st.set_page_config(page_title="RAG de Pólizas", layout="centered")
-st.title("Asistente para consultar pólizas de seguro en texto plano")
+# ------------------------------------------------------------
+# CONFIGURACIÓN DE LA APP
+# ------------------------------------------------------------
 
-st.sidebar.header("💡 Sugerencias de preguntas")
+st.set_page_config(page_title="Asistente RAG de Pólizas", layout="centered")
+st.title("Asistente RAG de Pólizas de Seguros")
+st.markdown("Sube un archivo de texto con el contenido de la póliza y realiza consultas sobre ella.")
+
+# Sidebar con sugerencias
+st.sidebar.header("Sugerencias de preguntas")
 st.sidebar.markdown("""
-- ¿Cuál es el deducible aplicable?  
 - ¿Qué coberturas incluye la póliza?  
-- ¿Qué hacer en caso de siniestro?
+- ¿Cuál es el deducible aplicable?  
+- ¿Qué debo hacer en caso de siniestro?  
+- ¿Cuándo inicia la cobertura?  
+- ¿Cuáles son las exclusiones principales?
 """)
 
-# ---------------------------------------------------------------------
-# 🔹 Subida del archivo
-# ---------------------------------------------------------------------
-uploaded_file = st.file_uploader("Sube el archivo de póliza (.txt)", type=["txt"])
+# ------------------------------------------------------------
+# SUBIDA Y PROCESAMIENTO DEL ARCHIVO
+# ------------------------------------------------------------
 
-if uploaded_file:
+uploaded_file = st.file_uploader("📄 Sube el archivo de póliza (.txt)", type="txt")
+
+if uploaded_file is not None:
     text = uploaded_file.read().decode("utf-8")
 
-    with st.spinner("Construyendo el índice vectorial... Esto puede tardar unos segundos."):
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=150,
-            separators=["\n\n", "\n", ".", " ", ""]
-        )
-        chunks = splitter.split_text(text)
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=150,
+        length_function=len
+    )
+    chunks = text_splitter.split_text(text)
 
-        embeddings = OpenAIEmbeddings(openai_api_key=api_key)
+    st.success(f"Índice vectorial creado con {len(chunks)} fragmentos.")
 
-        # 🔹 Crear base vectorial en memoria con Chroma
-        vectorstore = Chroma.from_texts(
-            chunks,
-            embeddings,
-            collection_name="polizas_temp"
-        )
+    # ------------------------------------------------------------
+    # CREAR ÍNDICE VECTORIAL CON CHROMA (LangChain)
+    # ------------------------------------------------------------
 
-        # 🔹 Crear el modelo LLM y el RAG
-        llm = ChatOpenAI(
-            temperature=0.2,
-            model="gpt-4o-mini",
-            openai_api_key=api_key
-        )
+    embeddings = OpenAIEmbeddings(openai_api_key=api_key)
+    vectorstore = Chroma.from_texts(
+        texts=chunks,
+        embedding=embeddings,
+        collection_name="polizas_temp",
+        persist_directory=None  # evita escribir archivos en Cloud
+    )
 
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=retriever,
-            return_source_documents=True
-        )
+    # ------------------------------------------------------------
+    # CONFIGURAR MODELO Y PROMPT
+    # ------------------------------------------------------------
 
-    st.success("✅ Índice vectorial creado correctamente. Ya puedes hacer preguntas.")
+    llm = ChatOpenAI(
+        openai_api_key=api_key,
+        model_name="gpt-3.5-turbo",
+        temperature=0.3
+    )
 
-    # Campo de entrada de pregunta (solo después del índice)
-    user_query = st.text_input("Escribe tu pregunta:")
-    if user_query:
-        with st.spinner("Buscando respuesta..."):
-            result = qa_chain(user_query)
+    prompt_template = """
+    Eres un asistente experto en pólizas de seguros.
+    Usa exclusivamente la información del contexto para responder de forma clara y breve.
+    Si la información no está en el contexto, responde: "No tengo información suficiente en la póliza para responder eso."
 
-        st.markdown("### 🧠 Respuesta:")
-        st.markdown(result["result"])
+    Contexto:
+    {context}
 
-        if "source_documents" in result:
-            st.markdown("### 📄 Fragmento utilizado para la respuesta:")
-            st.info(result["source_documents"][0].page_content)
+    Pregunta:
+    {question}
+    """
+
+    prompt = PromptTemplate(
+        input_variables=["context", "question"],
+        template=prompt_template
+    )
+
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        retriever=retriever,
+        chain_type_kwargs={"prompt": prompt},
+        return_source_documents=True
+    )
+
+    # ------------------------------------------------------------
+    # INTERFAZ DE PREGUNTAS Y RESPUESTAS
+    # ------------------------------------------------------------
+
+    question = st.text_input("Escribe tu pregunta sobre la póliza:")
+
+    if question:
+        result = qa_chain({"query": question})
+
+        st.markdown("###  Respuesta:")
+        st.write(result["result"])
+
+        if result.get("source_documents"):
+            st.markdown("### 📄 Fragmento más relevante utilizado:")
+            st.write(result["source_documents"][0].page_content.strip())
 
 else:
-    st.info("📄 Por favor, sube un archivo de texto (.txt) para comenzar.")
+    st.info("Por favor, sube un archivo de texto para comenzar.")
