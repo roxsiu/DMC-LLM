@@ -1,53 +1,48 @@
-# ---------------------------------------------------------------
-# RAG_POLIZAS.py - Asistente para consultar pólizas de seguro
-# Versión: Fragmento ganador con score (FAISS + OpenAI)
-# ---------------------------------------------------------------
-
+# ---------------------------------------------------------------------
+# 🔹 IMPORTS
+# ---------------------------------------------------------------------
 import os
 import streamlit as st
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import FAISS
+from langchain.vectorstores import Chroma
 from langchain.embeddings import OpenAIEmbeddings
-import openai
+from langchain.chains import RetrievalQA
+from langchain.chat_models import ChatOpenAI
 
-# ---------------------------------------------------------------
-# Cargar clave de API
-# ---------------------------------------------------------------
+# ---------------------------------------------------------------------
+# 🔹 Cargar la API Key desde el archivo .env
+# ---------------------------------------------------------------------
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 
 if not api_key:
-    st.error("No se encontró la variable OPENAI_API_KEY. Usa 'echo \"OPENAI_API_KEY=tu_api_key\" >> .env'")
+    st.error("⚠️ No se encontró la variable OPENAI_API_KEY. Usa 'echo \"OPENAI_API_KEY=tu_api_key\" >> .env'")
 else:
-    openai.api_key = api_key
+    os.environ["OPENAI_API_KEY"] = api_key
 
-# ---------------------------------------------------------------
-# Configuración general de Streamlit
-# ---------------------------------------------------------------
+# ---------------------------------------------------------------------
+# 🔹 Configuración de la app Streamlit
+# ---------------------------------------------------------------------
 st.set_page_config(page_title="RAG de Pólizas", layout="centered")
-st.title("Asistente para consultar pólizas de seguro")
+st.title("Asistente para consultar pólizas de seguro en texto plano")
 
-st.sidebar.header("Ejemplos de preguntas")
+st.sidebar.header("💡 Sugerencias de preguntas")
 st.sidebar.markdown("""
-- ¿Qué cubre la póliza?
-- ¿Cuál es el deducible aplicable?
+- ¿Cuál es el deducible aplicable?  
+- ¿Qué coberturas incluye la póliza?  
 - ¿Qué hacer en caso de siniestro?
-- ¿Cuándo vence la cobertura?
 """)
 
-# ---------------------------------------------------------------
-# Carga del archivo de texto
-# ---------------------------------------------------------------
+# ---------------------------------------------------------------------
+# 🔹 Subida del archivo
+# ---------------------------------------------------------------------
 uploaded_file = st.file_uploader("Sube el archivo de póliza (.txt)", type=["txt"])
 
-# ---------------------------------------------------------------
-# Procesamiento del documento
-# ---------------------------------------------------------------
 if uploaded_file:
     text = uploaded_file.read().decode("utf-8")
 
-    with st.spinner("Procesando la póliza..."):
+    with st.spinner("Construyendo el índice vectorial... Esto puede tardar unos segundos."):
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=150,
@@ -55,67 +50,45 @@ if uploaded_file:
         )
         chunks = splitter.split_text(text)
 
-        # Crear embeddings y vectorstore con FAISS
         embeddings = OpenAIEmbeddings(openai_api_key=api_key)
-        vectorstore = FAISS.from_texts(chunks, embeddings)
 
-    # Mostrar confirmación antes del campo de pregunta
-    st.success("Índice vectorial creado correctamente.")
+        # 🔹 Crear base vectorial en memoria con Chroma
+        vectorstore = Chroma.from_texts(
+            chunks,
+            embeddings,
+            collection_name="polizas_temp"
+        )
 
-    # Campo de pregunta
+        # 🔹 Crear el modelo LLM y el RAG
+        llm = ChatOpenAI(
+            temperature=0.2,
+            model="gpt-4o-mini",
+            openai_api_key=api_key
+        )
+
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=retriever,
+            return_source_documents=True
+        )
+
+    st.success("✅ Índice vectorial creado correctamente. Ya puedes hacer preguntas.")
+
+    # Campo de entrada de pregunta (solo después del índice)
     user_query = st.text_input("Escribe tu pregunta:")
-    search_button = st.button("Buscar")
-
-    # -----------------------------------------------------------
-    # Consulta y respuesta
-    # -----------------------------------------------------------
-    if search_button and user_query:
+    if user_query:
         with st.spinner("Buscando respuesta..."):
-            # Recuperar varios candidatos con sus scores
-            results = vectorstore.similarity_search_with_score(user_query, k=5)
+            result = qa_chain(user_query)
 
-            # Elegir el fragmento con menor score (más relevante)
-            best_doc, best_score = min(results, key=lambda x: x[1])
-            context = best_doc.page_content
+        st.markdown("### 🧠 Respuesta:")
+        st.markdown(result["result"])
 
-            # Prompt anclado al contexto ganador
-            prompt = f"""Responde SOLO usando el siguiente contexto de la póliza.
-Si la respuesta no está en el contexto, di: "No se encuentra en la póliza".
-
-Contexto:
-\"\"\"{context}\"\"\"
-
-Pregunta: {user_query}
-
-Respuesta:"""
-
-            # Llamada al modelo instruct
-            response = openai.Completion.create(
-                model="gpt-3.5-turbo-instruct",
-                prompt=prompt,
-                max_tokens=400,
-                temperature=0.2
-            )
-
-            answer = response.choices[0].text.strip()
-
-        # -------------------------------------------------------
-        # Mostrar resultados
-        # -------------------------------------------------------
-        st.markdown("### Respuesta:")
-        st.markdown(answer)
-
-        st.markdown("---")
-        st.markdown("#### Fragmento utilizado para la respuesta:")
-        st.markdown(best_doc.page_content)
-        st.caption(f"Score de similitud (distancia FAISS): {best_score:.4f}")
-
-        # Mostrar los 3 mejores candidatos (opcional)
-        with st.expander("Ver otros fragmentos candidatos"):
-            for rank, (doc, score) in enumerate(sorted(results, key=lambda x: x[1])[:3], start=1):
-                st.markdown(f"**Candidato {rank} — score: {score:.4f}**")
-                st.write(doc.page_content)
-                st.markdown("---")
+        if "source_documents" in result:
+            st.markdown("### 📄 Fragmento utilizado para la respuesta:")
+            st.info(result["source_documents"][0].page_content)
 
 else:
-    st.info("Por favor, sube un archivo de texto para comenzar.")
+    st.info("📄 Por favor, sube un archivo de texto (.txt) para comenzar.")
