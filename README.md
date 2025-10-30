@@ -1,48 +1,41 @@
-# DMC-LLM
-Proyecto del Grupo 4 del Curso LLM
+# Proyecto RAG - Consulta de Pólizas de Seguro
 
-# Proyecto RAG para Pólizas (.txt) — Streamlit + LangChain + FAISS
-
-Este repositorio implementa un asistente RAG (Retrieval‑Augmented Generation) para analizar pólizas de seguro en formato `.txt`. Permite indexar el contenido y hacer preguntas con una interfaz en Streamlit.
+Aplicación en **Streamlit** que permite consultar el contenido de una póliza de seguros en texto plano, utilizando un enfoque de **RAG (Retrieval-Augmented Generation)**.  
+El usuario puede subir un archivo `.txt` y realizar preguntas sobre su contenido.
 
 ---
 
-## Requisitos
+## Descripción técnica
 
-* Python 3.9 o superior
-* GitHub Codespaces (recomendado) o entorno local con Python
+El proyecto implementa un flujo RAG básico:
+
+1. **Carga del documento (.txt)**  
+   El usuario sube una póliza en texto plano.
+
+2. **División en fragmentos (chunking)**  
+   Se usa `RecursiveCharacterTextSplitter` para dividir el texto en fragmentos de 1000 caracteres con 150 de solapamiento.
+
+3. **Generación de embeddings**  
+   Se crean vectores numéricos mediante `OpenAIEmbeddings` (modelo `text-embedding-3-small`).
+
+4. **Almacenamiento vectorial y búsqueda**  
+   Los embeddings se guardan en una base FAISS para búsquedas de similitud.
+
+5. **Generación de respuesta**  
+   Los fragmentos más relevantes se envían al modelo `gpt-3.5-turbo`, que genera una respuesta contextualizada.
+
+---
+
+## Tecnologías utilizadas
+
+| Componente | Herramienta |
+|-------------|-------------|
+| Interfaz | Streamlit |
+| Framework | LangChain |
+| LLM | GPT-3.5-Turbo |
+| Embeddings | OpenAIEmbeddings |
+| Vector Store | FAISS |
+| Splitter | RecursiveCharacterTextSplitter |
+| Variables de entorno | python-dotenv |
 
 
-
-
-3. Instalar dependencias (dos opciones):
-
-   * Con `requirements.txt`:
-
-     ```bash
-     pip install -r requirements.txt
-     ```
-   * O instalación directa:
-
-     ```bash
-     pip install streamlit==1.39.0 \
-                 langchain==0.3.7 \
-                 langchain-community==0.3.7 \
-                 langchain-text-splitters==0.3.2 \
-                 faiss-cpu==1.8.0.post1 \
-                 sentence-transformers==2.7.0 \
-                 tiktoken==0.7.0 \
-                 openai==1.51.2 \
-                 python-dotenv==1.0.1
-     ``
-
-
-## Estructura del repositorio
-
-```
-<repo_root>/
-├─ RAG4.py        # Aplicación principal 
-├─ requirements.txt         # Lista de dependencias 
-├─ .env                     # Clave API (NO subir a GitHub)
-├─ .gitignore               # Debe incluir .env
-└─ README.md                # Este documento
