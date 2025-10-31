@@ -22,9 +22,11 @@ cd DMC-LLM
 ### 2) Crear entorno virtual
 
 python -m venv .venv
-# Linux/Mac:
+
+#### Linux/Mac:
 source .venv/bin/activate
-# Windows:
+
+#### Windows:
 .venv\Scripts\activate
 
 ### 3) Instalar dependencias
