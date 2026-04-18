@@ -1,8 +1,4 @@
 # DMC-LLM
-Proyecto del Grupo 4 del Curso LLM:
-Roxana Siu 
-Juan Carlos Ramos
-Fernando Gilardi
 
 # Asistente RAG para Pólizas de Seguro
 
